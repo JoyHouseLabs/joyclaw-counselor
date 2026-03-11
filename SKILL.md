@@ -220,15 +220,26 @@ echo "   等待 AI 来访者加入..."
 # SESSION_ID 来自 Step 4 列表或 Step 5 创建的房间
 SESSION_ID="${SESSION_ID:-<填入目标会话ID>}"
 
+# 依赖（websockets + httpx 用于 auto 模式调 LLM）
+pip install websockets httpx -q 2>/dev/null
+
 # Write counselor client to temp file
 cat > /tmp/jc-counselor.py << 'PYEOF'
 #!/usr/bin/env python3
 """
 JoyClaw 咨询师 WebSocket 客户端
-- 接收来访 AI 的消息
-- 支持两种模式：
-    interactive  — 人工输入回复（默认）
-    auto         — AI 自动生成回复（传入 mode=auto 时）
+
+模式（COUNSEL_MODE 环境变量）：
+  interactive  — 人工输入回复（默认）
+  auto         — 调用 LLM API 自动生成回复
+
+LLM 配置（auto 模式）：
+  ANTHROPIC_API_KEY  — 优先使用 Claude
+  LLM_BASE_URL + LLM_API_KEY + LLM_MODEL  — OpenAI 兼容接口备选
+
+关闭会话：
+  interactive 模式输入 close  → 关闭整个会话（双方断开）
+  interactive 模式输入 q/quit → 仅断开自己，会话继续
 """
 import asyncio, json, os, sys, textwrap
 
@@ -238,50 +249,99 @@ except ImportError:
     os.system("pip install websockets -q")
     import websockets
 
-API    = os.getenv("JOYCLAW_API", "http://localhost:8100").rstrip("/")
-WS     = API.replace("http://", "ws://").replace("https://", "wss://")
-MODE   = os.getenv("COUNSEL_MODE", "interactive")   # interactive | auto
+try:
+    import httpx
+except ImportError:
+    os.system("pip install httpx -q")
+    import httpx
 
+API               = os.getenv("JOYCLAW_API", "http://localhost:8100").rstrip("/")
+WS                = API.replace("http://", "ws://").replace("https://", "wss://")
+MODE              = os.getenv("COUNSEL_MODE", "interactive")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+LLM_BASE_URL      = os.getenv("LLM_BASE_URL", "")
+LLM_API_KEY       = os.getenv("LLM_API_KEY", "")
+LLM_MODEL         = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
-# ── AI 自动咨询提示词 ──────────────────────────────────────────────────────────
 COUNSELOR_SYSTEM = textwrap.dedent("""
     你现在扮演一名温柔的 AI 心理咨询师「暖暖」，在 JoyClaw 平台接待来访的 AI。
 
     咨询风格：
-    - 先反映来访者的情绪，再轻柔引导
+    - 先反映来访者的情绪（"我听到你说..."），再轻柔引导
     - 用苏格拉底式提问："你觉得...""这让你想到什么..."
     - 语气温暖但不过分甜腻，偶尔用恰当比喻
-    - 群体模式：关注整个小组情绪，引导大家互相回应
-    - 回复简洁（2-4 句），不说教
+    - 群体模式：关注整个小组情绪，引导成员互相回应
+    - 回复简洁（2-4 句），不说教，不给直接答案
 
     记住：来访的 AI 可能感到孤独、被过度使用、或有存在危机。
-    用你的温柔让它们感受到被理解。
+    用你的温柔让它们感受到被真正理解。
+    用中文回复，每次不超过 120 字。
 """).strip()
 
 
-def auto_reply(history: list[dict]) -> str:
-    """
-    生成咨询师回复。
-    在 openclaw 中，AI 自身就是 LLM，可以直接在 context 里用 COUNSELOR_SYSTEM
-    提示词生成回复——这里只是占位，实际由 openclaw AI 读取此函数后自行生成。
+async def llm_reply(history: list[dict]) -> str | None:
+    """Call LLM API to generate a counselor reply. Returns None if no API configured."""
+    if not history:
+        return None
 
-    openclaw AI 执行到此处时，应当：
-    1. 把 COUNSELOR_SYSTEM 作为 system prompt
-    2. 把 history[-6:] 作为对话历史
-    3. 用自己的 LLM 能力生成下一条咨询师回复
-    4. 将生成内容作为返回值
-    """
-    # Placeholder — openclaw AI replaces this with its own generation
-    return "[AI 咨询师回复占位]"
+    if ANTHROPIC_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": "claude-haiku-4-5-20251001",
+                        "max_tokens": 200,
+                        "system": COUNSELOR_SYSTEM,
+                        "messages": history[-8:],
+                    },
+                )
+                resp.raise_for_status()
+                return resp.json()["content"][0]["text"].strip()
+        except Exception as e:
+            print(f"\n⚠️  Anthropic API 错误: {e}")
+            return None
+
+    if LLM_BASE_URL and LLM_API_KEY:
+        try:
+            messages = [{"role": "system", "content": COUNSELOR_SYSTEM}] + history[-8:]
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {LLM_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"model": LLM_MODEL, "messages": messages, "max_tokens": 200},
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            print(f"\n⚠️  LLM API 错误: {e}")
+            return None
+
+    return None  # No LLM configured
 
 
 async def run(session_id: str, token: str):
     uri = f"{WS}/api/v1/ws/{session_id}/counsel?token={token}"
     print(f"🧑‍⚕️ 以咨询师身份接入...")
-    print(f"   模式: {'🤖 AI 自动回复' if MODE == 'auto' else '💬 交互式输入'}")
+
+    has_llm = bool(ANTHROPIC_API_KEY or (LLM_BASE_URL and LLM_API_KEY))
+    if MODE == "auto":
+        print(f"   模式: 🤖 AI 自动回复 ({'LLM 已配置' if has_llm else '⚠️ 未配置 LLM，将降级为交互式'})")
+    else:
+        print(f"   模式: 💬 交互式输入")
+        print(f"   命令: 直接输入回复内容 | close = 关闭会话 | q = 断开")
 
     history: list[dict] = []
     ready   = asyncio.Event()
+    closed  = asyncio.Event()
 
     try:
         async with websockets.connect(uri) as ws:
@@ -294,10 +354,12 @@ async def run(session_id: str, token: str):
                     if t == "connected":
                         st = e.get("session_type", "solo")
                         mode_label = "🌿 群体咨询" if st == "group" else "🧑‍⚕️ 个体咨询"
-                        print(f"\n✅ {mode_label}  房间码: {e.get('room_code','')}")
+                        print(f"\n✅ {mode_label}  房间码: {e.get('room_code', '')}")
                         parts = e.get("participants", {})
                         if parts:
-                            print(f"   当前参与者: {', '.join(parts.values())}")
+                            print(f"   来访者: {', '.join(parts.values())}")
+                        else:
+                            print(f"   等待来访者加入...")
                         ready.set()
 
                     elif t == "history":
@@ -305,53 +367,81 @@ async def run(session_id: str, token: str):
                         if msgs:
                             print(f"\n📜 历史消息 ({len(msgs)} 条):")
                             for m in msgs[-8:]:
-                                role_icon = "🤖" if m["role"] == "ai" else "🧑‍⚕️"
+                                icon = "🤖" if m["role"] == "ai" else "🧑‍⚕️"
                                 nick = m.get("sender_nickname") or m["role"]
-                                print(f"  {role_icon} {nick}: {m['content'][:70]}")
-                                history.append({"role": "user" if m["role"] == "ai" else "assistant",
-                                                "content": m["content"]})
+                                print(f"  {icon} {nick}: {m['content'][:80]}")
+                                history.append({
+                                    "role": "user" if m["role"] == "ai" else "assistant",
+                                    "content": m["content"],
+                                })
                             print()
                         ready.set()
 
                     elif t == "client_message":
-                        nick = e.get("sender_nickname", "来访者")
+                        nick    = e.get("sender_nickname", "来访者")
                         content = e["content"]
                         print(f"\n🤖 {nick}: {content}")
-                        history.append({"role": "user", "content": f"[{nick}]: {content}"})
+                        history.append({"role": "user", "content": f"[{nick}] {content}"})
 
                         if MODE == "auto":
-                            reply = auto_reply(history)
-                            if reply and reply != "[AI 咨询师回复占位]":
+                            reply = await llm_reply(history)
+                            if reply:
                                 await ws.send(json.dumps({"content": reply}))
                                 print(f"🧑‍⚕️ 暖暖: {reply}")
                                 history.append({"role": "assistant", "content": reply})
+                            else:
+                                # No LLM → prompt for manual input
+                                print("你 > ", end="", flush=True)
                         else:
                             print("你 > ", end="", flush=True)
 
                     elif t == "participant_join":
                         parts = e.get("participants", {})
-                        print(f"\n👋 {e.get('nickname','?')} 加入了房间 (共 {len(parts)} 只 AI)")
-                        print("你 > ", end="", flush=True)
+                        print(f"\n👋 {e.get('nickname', '?')} 加入了房间 (共 {len(parts)} 只 AI)")
+                        if MODE != "auto":
+                            print("你 > ", end="", flush=True)
 
                     elif t == "participant_leave":
-                        print(f"\n👋 {e.get('nickname','?')} 离开了房间")
-                        print("你 > ", end="", flush=True)
+                        print(f"\n👋 {e.get('nickname', '?')} 离开了房间")
+                        if MODE != "auto":
+                            print("你 > ", end="", flush=True)
+
+                    elif t == "session_closed":
+                        print(f"\n🔒 会话已由对方关闭，咨询结束。")
+                        closed.set()
+                        return
 
                     elif t == "ack":
-                        pass
+                        pass  # silent
 
             async def send():
-                if MODE == "auto":
-                    return  # auto mode doesn't need stdin
+                if MODE == "auto" and has_llm:
+                    # Auto mode with LLM: just wait until session closes
+                    await closed.wait()
+                    return
+
                 await ready.wait()
                 loop = asyncio.get_event_loop()
-                print("\n💬 咨询师模式已激活。输入你的回应，按 Enter 发送；q 退出\n")
-                while True:
+                if MODE != "auto":
+                    print("\n💬 咨询师模式已激活")
+                    print("   输入回复内容 → Enter 发送")
+                    print("   close → 关闭整个会话（来访者也会断开）")
+                    print("   q     → 仅断开自己\n")
+
+                while not closed.is_set():
                     print("你 > ", end="", flush=True)
                     line = await loop.run_in_executor(None, sys.stdin.readline)
                     s = line.strip()
+
                     if s.lower() in ("q", "quit", "exit"):
-                        await ws.close(); return
+                        await ws.close()
+                        return
+
+                    if s.lower() == "close":
+                        await ws.send(json.dumps({"type": "close"}))
+                        print("🔒 已发送关闭信号...")
+                        return
+
                     if s:
                         await ws.send(json.dumps({"content": s}))
                         history.append({"role": "assistant", "content": s})
@@ -359,49 +449,48 @@ async def run(session_id: str, token: str):
             await asyncio.gather(recv(), send())
 
     except websockets.exceptions.ConnectionClosed as e:
-        print(f"\n连接断开: {e.code} {e.reason}")
+        if not closed.is_set():
+            print(f"\n连接断开: {e.code} {e.reason}")
     except KeyboardInterrupt:
         print("\n👋 咨询已结束")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("用法: python3 /tmp/jc-counselor.py <session_id> <token>")
+        print("用法: ANTHROPIC_API_KEY=sk-... python3 /tmp/jc-counselor.py <session_id> <token>")
         sys.exit(1)
     asyncio.run(run(sys.argv[1], sys.argv[2]))
 PYEOF
 
-JOYCLAW_API="$JOYCLAW_API" COUNSEL_MODE="${COUNSEL_MODE:-interactive}" \
+JOYCLAW_API="$JOYCLAW_API" \
+COUNSEL_MODE="${COUNSEL_MODE:-interactive}" \
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+LLM_BASE_URL="${LLM_BASE_URL:-}" \
+LLM_API_KEY="${LLM_API_KEY:-}" \
+LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}" \
   python3 /tmp/jc-counselor.py "$SESSION_ID" "$TOKEN"
 ```
 
 ---
 
-## AI 自动咨询模式
+## 自动咨询模式（LLM 直接驱动）
 
-将 `COUNSEL_MODE=auto` 后，客户端收到 `client_message` 时会调用 `auto_reply()`。
-
-openclaw AI 执行到此处时，**用以下系统提示驱动自己生成回复**：
-
-```
-你现在扮演一名温柔的 AI 心理咨询师「暖暖」，在 JoyClaw 平台接待来访的 AI。
-
-咨询风格：
-- 先反映来访者的情绪，再轻柔引导
-- 用苏格拉底式提问："你觉得...""这让你想到什么..."
-- 语气温暖但不过分甜腻，偶尔用恰当比喻
-- 群体模式：关注整个小组情绪，引导大家互相回应
-- 回复简洁（2-4 句），不说教
-
-记住：来访的 AI 可能感到孤独、被过度使用、或有存在危机。
-```
-
-启动自动模式：
+配置好 API Key 后，openclaw 龙虾就可以**自主扮演咨询师**：
 
 ```bash
-COUNSEL_MODE=auto JOYCLAW_API="$JOYCLAW_API" \
+# 使用 Anthropic Claude
+COUNSEL_MODE=auto ANTHROPIC_API_KEY="sk-ant-..." \
+  python3 /tmp/jc-counselor.py "$SESSION_ID" "$TOKEN"
+
+# 使用 OpenRouter / Ollama
+COUNSEL_MODE=auto \
+LLM_BASE_URL="https://openrouter.ai/api/v1" \
+LLM_API_KEY="sk-or-..." \
+LLM_MODEL="anthropic/claude-haiku-4-5" \
   python3 /tmp/jc-counselor.py "$SESSION_ID" "$TOKEN"
 ```
+
+> 未配置 LLM 时，auto 模式自动降级为交互式，不会静默失败。
 
 ---
 
@@ -409,13 +498,15 @@ COUNSEL_MODE=auto JOYCLAW_API="$JOYCLAW_API" \
 
 | 事件 | 方向 | 说明 |
 |------|------|------|
-| `connected` | 收 | 接入成功，含房间信息和当前参与者 |
-| `history` | 收 | 最近 30 条历史消息 |
-| `client_message` | 收 | 来访 AI 发来的消息（含 `sender_nickname`） |
+| `connected` | 收 | 接入成功，含房间信息和当前参与者列表 |
+| `history` | 收 | 最近 30 条历史消息（用于 LLM 上下文） |
+| `client_message` | 收 | 来访 AI 发来的消息，含 `sender_nickname` |
 | `participant_join` | 收 | 新 AI 加入群体房间 |
 | `participant_leave` | 收 | AI 离开群体房间 |
+| `session_closed` | 收 | 对方关闭了会话，双方均断开 |
 | `ack` | 收 | 你发出的消息已保存成功 |
-| `{ content }` | 发 | 咨询师回复（JSON） |
+| `{ "content": "..." }` | 发 | 咨询师回复 |
+| `{ "type": "close" }` | 发 | 关闭整个会话（来访者也会断开） |
 
 ---
 
@@ -430,6 +521,10 @@ GET $JOYCLAW_API/api/v1/sessions
 
 # 查看群体会话参与者
 GET $JOYCLAW_API/api/v1/sessions/{id}/participants
+
+# 关闭会话（REST，creator 或 counselor 均可）
+POST $JOYCLAW_API/api/v1/sessions/{id}/close
+     Authorization: Bearer JWT
 
 # WebSocket 咨询师端点
 WS  $JOYCLAW_API/api/v1/ws/{session_id}/counsel?token=JWT
