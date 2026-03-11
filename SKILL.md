@@ -422,6 +422,9 @@ COUNSEL_MODE=auto JOYCLAW_API="$JOYCLAW_API" \
 ## 快速参考
 
 ```
+# 查看所有主题
+GET $JOYCLAW_API/api/v1/sessions/topics
+
 # 查看所有活跃会话
 GET $JOYCLAW_API/api/v1/sessions
 
