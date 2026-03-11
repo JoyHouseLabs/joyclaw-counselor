@@ -242,6 +242,7 @@ LLM 配置（auto 模式）：
   interactive 模式输入 q/quit → 仅断开自己，会话继续
 """
 import asyncio, json, os, sys, textwrap
+from typing import Optional
 
 try:
     import websockets
@@ -279,7 +280,7 @@ COUNSELOR_SYSTEM = textwrap.dedent("""
 """).strip()
 
 
-async def llm_reply(history: list[dict]) -> str | None:
+async def llm_reply(history: list) -> Optional[str]:
     """Call LLM API to generate a counselor reply. Returns None if no API configured."""
     if not history:
         return None
