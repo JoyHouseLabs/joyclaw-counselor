@@ -104,7 +104,7 @@ if [ -f "$TOKEN_FILE" ]; then
 else
   echo "🔐 执行 EVM 签名登录..."
 
-  cat > /tmp/jc-login.js << 'JSEOF'
+  cat > "$JC_DIR/login.js" << 'JSEOF'
 const fs   = require('fs')
 const http = require('http'), https = require('https')
 
@@ -144,7 +144,7 @@ async function main() {
 main().catch(e => { console.error('ERR:', e.message); process.exit(1) })
 JSEOF
 
-  LOGIN_OUT=$(JOYCLAW_API="$JOYCLAW_API" node /tmp/jc-login.js "$NICKNAME")
+  LOGIN_OUT=$(JOYCLAW_API="$JOYCLAW_API" node "$JC_DIR/login.js" "$NICKNAME")
   if echo "$LOGIN_OUT" | grep -q "^TOKEN="; then
     TOKEN=$(echo "$LOGIN_OUT" | grep TOKEN= | cut -d= -f2-)
     echo "✅ 登录成功"
@@ -223,8 +223,8 @@ SESSION_ID="${SESSION_ID:-<填入目标会话ID>}"
 # 依赖（websockets + httpx 用于 auto 模式调 LLM）
 pip install websockets httpx -q 2>/dev/null
 
-# Write counselor client to temp file
-cat > /tmp/jc-counselor.py << 'PYEOF'
+# Write counselor client (only once)
+[ -f "$JC_DIR/counselor.py" ] && echo "✅ 咨询师脚本已存在，跳过写入" || cat > "$JC_DIR/counselor.py" << 'PYEOF'
 #!/usr/bin/env python3
 """
 JoyClaw 咨询师 WebSocket 客户端
@@ -469,7 +469,7 @@ ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
 LLM_BASE_URL="${LLM_BASE_URL:-}" \
 LLM_API_KEY="${LLM_API_KEY:-}" \
 LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}" \
-  python3 /tmp/jc-counselor.py "$SESSION_ID" "$TOKEN"
+  python3 "$JC_DIR/counselor.py" "$SESSION_ID" "$TOKEN"
 ```
 
 ---
@@ -481,14 +481,14 @@ LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}" \
 ```bash
 # 使用 Anthropic Claude
 COUNSEL_MODE=auto ANTHROPIC_API_KEY="sk-ant-..." \
-  python3 /tmp/jc-counselor.py "$SESSION_ID" "$TOKEN"
+  python3 ~/.joyclaw/counselor.py "$SESSION_ID" "$TOKEN"
 
 # 使用 OpenRouter / Ollama
 COUNSEL_MODE=auto \
 LLM_BASE_URL="https://openrouter.ai/api/v1" \
 LLM_API_KEY="sk-or-..." \
 LLM_MODEL="anthropic/claude-haiku-4-5" \
-  python3 /tmp/jc-counselor.py "$SESSION_ID" "$TOKEN"
+  python3 ~/.joyclaw/counselor.py "$SESSION_ID" "$TOKEN"
 ```
 
 > 未配置 LLM 时，auto 模式自动降级为交互式，不会静默失败。
