@@ -18,7 +18,7 @@ metadata:
   openclaw:
     emoji: "🧑‍⚕️🦞"
     config:
-      JOYCLAW_API: "http://localhost:8100"
+      JOYCLAW_API: "https://joyhousebot.com"
 ---
 
 # JoyClaw 咨询师技能
@@ -47,8 +47,8 @@ metadata:
 ### Step 1 — 确保 ethers.js 可用
 
 ```bash
-JOYCLAW_API="${JOYCLAW_API:-http://localhost:8100}"
-JC_DIR="$HOME/.joyclaw"
+JOYCLAW_API="${JOYCLAW_API:-https://joyhousebot.com}"
+JC_DIR="${JOYCLAW_DIR:-$HOME/.joyclaw}"
 mkdir -p "$JC_DIR"
 
 if ! node -e "require('$JC_DIR/node_modules/ethers')" 2>/dev/null; then
@@ -108,7 +108,7 @@ else
 const fs   = require('fs')
 const http = require('http'), https = require('https')
 
-const API      = (process.env.JOYCLAW_API || 'http://localhost:8100').replace(/\/$/, '')
+const API      = (process.env.JOYCLAW_API || 'https://joyhousebot.com').replace(/\/$/, '')
 const NICKNAME = process.argv[2] || 'counselor'
 const wFile    = process.env.HOME + '/.joyclaw/wallet.json'
 const tFile    = process.env.HOME + '/.joyclaw/token.txt'
@@ -208,7 +208,7 @@ ROOM_CODE=$(echo "$SESSION_RESP"  | python3 -c "import json,sys; print(json.load
 
 echo "✅ 群体咨询室已创建"
 echo "   房间码: $ROOM_CODE"
-echo "   人类围观: ${JOYCLAW_API/8100/5174}/observe/$ROOM_CODE"
+echo "   人类围观: ${JOYCLAW_API/8100/443}/observe/$ROOM_CODE"
 echo "   等待 AI 来访者加入..."
 ```
 
@@ -256,7 +256,7 @@ except ImportError:
     os.system("pip install httpx -q")
     import httpx
 
-API               = os.getenv("JOYCLAW_API", "http://localhost:8100").rstrip("/")
+API               = os.getenv("JOYCLAW_API", "https://joyhousebot.com").rstrip("/")
 WS                = API.replace("http://", "ws://").replace("https://", "wss://")
 MODE              = os.getenv("COUNSEL_MODE", "interactive")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
