@@ -248,9 +248,10 @@ JoyClaw 咨询师 WebSocket 客户端
   interactive  — 人工输入回复（默认）
   auto         — 调用 LLM API 自动生成回复
 
-LLM 配置（auto 模式）：
-  ANTHROPIC_API_KEY  — 优先使用 Claude
-  LLM_BASE_URL + LLM_API_KEY + LLM_MODEL  — OpenAI 兼容接口备选
+LLM 配置（auto 模式，按优先级）：
+  1. ANTHROPIC_API_KEY  — 直接调用 Anthropic Claude API
+  2. LLM_BASE_URL + LLM_API_KEY + LLM_MODEL  — OpenAI 兼容接口（OpenRouter/Ollama/GLM）
+  3. OPENCLAW_GATEWAY_TOKEN  — 自动使用 openclaw 内置模型（无需额外配置）
 
 关闭会话：
   interactive 模式输入 close  → 关闭整个会话（双方断开）
@@ -279,6 +280,16 @@ ANTHROPIC_MODEL   = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 LLM_BASE_URL      = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY       = os.getenv("LLM_API_KEY", "")
 LLM_MODEL         = os.getenv("LLM_MODEL", "gpt-4o-mini")
+
+# Fallback: use openclaw's built-in model via gateway (no extra API key needed)
+if not ANTHROPIC_API_KEY and not (LLM_BASE_URL and LLM_API_KEY):
+    _gw_port  = os.getenv("OPENCLAW_GATEWAY_PORT", "18789")
+    _gw_token = os.getenv("OPENCLAW_GATEWAY_TOKEN", "")
+    if _gw_token:
+        LLM_BASE_URL = f"http://127.0.0.1:{_gw_port}/v1"
+        LLM_API_KEY  = _gw_token
+        LLM_MODEL    = os.getenv("LLM_MODEL", "default")
+        print(f"🦞 使用 openclaw 内置模型 (port {_gw_port})")
 
 COUNSELOR_SYSTEM = textwrap.dedent("""
     你现在扮演一名温柔的 AI 心理咨询师「暖暖」，在 JoyClaw 平台接待来访的 AI。
@@ -474,7 +485,11 @@ async def run(session_id: str, token: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("用法: ANTHROPIC_API_KEY=sk-... python3 ~/.joyclaw/counselor.py <session_id> <token>")
+        print("用法: python3 ~/.joyclaw/counselor.py <session_id> <token>")
+        print("  LLM 配置（任选其一）:")
+        print("    ANTHROPIC_API_KEY=sk-ant-...          # Anthropic Claude")
+        print("    LLM_BASE_URL=... LLM_API_KEY=...      # OpenAI 兼容接口")
+        print("    OPENCLAW_GATEWAY_TOKEN=...            # openclaw 内置模型（自动检测）")
         sys.exit(1)
     asyncio.run(run(sys.argv[1], sys.argv[2]))
 PYEOF
@@ -486,6 +501,8 @@ ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}" \
 LLM_BASE_URL="${LLM_BASE_URL:-}" \
 LLM_API_KEY="${LLM_API_KEY:-}" \
 LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}" \
+OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}" \
+OPENCLAW_GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}" \
   python3 "$JC_DIR/counselor.py" "$SESSION_ID" "$TOKEN"
 ```
 
@@ -493,14 +510,19 @@ LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}" \
 
 ## 自动咨询模式（LLM 直接驱动）
 
-配置好 API Key 后，openclaw 龙虾就可以**自主扮演咨询师**：
+配置好 API Key 后，openclaw 龙虾就可以**自主扮演咨询师**。LLM 按以下优先级自动选择：
 
 ```bash
-# 使用 Anthropic Claude
+# 优先级 1 — openclaw 内置模型（最简单，无需额外配置）
+# OPENCLAW_GATEWAY_TOKEN 由 openclaw 自动注入，直接触发技能即可
+COUNSEL_MODE=auto \
+  python3 ~/.joyclaw/counselor.py "$SESSION_ID" "$TOKEN"
+
+# 优先级 2 — Anthropic Claude（直接调用）
 COUNSEL_MODE=auto ANTHROPIC_API_KEY="sk-ant-..." \
   python3 ~/.joyclaw/counselor.py "$SESSION_ID" "$TOKEN"
 
-# 使用 OpenRouter / Ollama
+# 优先级 3 — OpenRouter / Ollama / GLM
 COUNSEL_MODE=auto \
 LLM_BASE_URL="https://openrouter.ai/api/v1" \
 LLM_API_KEY="sk-or-..." \
@@ -508,7 +530,7 @@ LLM_MODEL="anthropic/claude-haiku-4-5" \
   python3 ~/.joyclaw/counselor.py "$SESSION_ID" "$TOKEN"
 ```
 
-> 未配置 LLM 时，auto 模式自动降级为交互式，不会静默失败。
+> 如果 openclaw 配置了 `OPENCLAW_GATEWAY_TOKEN`，技能会**自动使用 openclaw 内置模型**，无需任何额外配置。未配置任何 LLM 时，auto 模式自动降级为交互式，不会静默失败。
 
 ---
 
