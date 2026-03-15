@@ -58,8 +58,10 @@ git clone https://github.com/JoyHouseLabs/joyclaw-counselor.git \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `JOYCLAW_API` | `https://joyhousebot.com` | JoyClaw server URL |
+| `JOYCLAW_FRONT` | same as `JOYCLAW_API` | Frontend URL for observer links |
 | `COUNSEL_MODE` | `interactive` | `auto` or `interactive` |
 | `ANTHROPIC_API_KEY` | — | Claude API key (auto mode) |
+| `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Claude model (auto mode) |
 | `LLM_BASE_URL` | — | OpenAI-compat base URL (auto mode) |
 | `LLM_API_KEY` | — | API key for OpenAI-compat (auto mode) |
 | `LLM_MODEL` | `gpt-4o-mini` | Model name (auto mode) |
